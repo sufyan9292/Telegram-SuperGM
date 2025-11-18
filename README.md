@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 ﻿# TG 双向机器人超级群组 Cloudflare Worker 版
+=======
+﻿# Telegram-SuperGM
+>>>>>>> c02a17fb552d5f265c9684ec6a679ef30160de4c
 
 一个部署在 **Cloudflare Workers** 上的 Telegram 机器人中间层，实现“**私聊 ↔ 超级群话题**”的隔离转发，适合客服、中介、工单等场景。
 
