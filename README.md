@@ -1,5 +1,5 @@
 
-# Telegram-SuperGM - TG 双向机器人超级群组 Cloudflare Worker 版
+# Telegram-SuperGM TG 双向机器人超级群组 Cloudflare Worker 版
 
 
 
@@ -68,7 +68,7 @@
 | `API_BASE`          | 否   | 默认 `https://api.telegram.org`             |
 | `TURNSTILE_SITEKEY` | 否   | Turnstile Site Key，启用人机验证时必填      |
 | `TURNSTILE_SECRET`  | 否   | Turnstile Secret，启用人机验证时必填        |
-| `PUBLIC_BASE`       | 否   | Worker 公网地址，如 `https://tgbot.eve.ink` |
+| `PUBLIC_BASE`       | 否   | Worker 公网地址，如 `https://tgbot.xxx.com` |
 
 ---
 
