@@ -23,16 +23,29 @@ export default {
     }
 
     // 私聊 -> 话题
-  if (msg.chat && msg.chat.type === 'private') {
+    if (msg.chat && msg.chat.type === 'private') {
       await handlePrivateMessage(msg, env);
       return new Response('OK');
     }
 
-    // 群话题 -> 私聊
+    // 群内事件 / 话题相关
     const supergroupId = Number(env.SUPERGROUP_ID);
-    if (msg.chat && Number(msg.chat.id) === supergroupId && msg.message_thread_id) {
-      await handleTopicMessage(msg, env);
-      return new Response('OK');
+    if (msg.chat && Number(msg.chat.id) === supergroupId) {
+      // 话题被关闭
+      if (msg.forum_topic_closed && msg.message_thread_id) {
+        await markThreadClosed(msg.message_thread_id, env);
+        return new Response('OK');
+      }
+      // 话题重新开启
+      if (msg.forum_topic_reopened && msg.message_thread_id) {
+        await markThreadReopened(msg.message_thread_id, env);
+        return new Response('OK');
+      }
+      // 普通话题消息 → 私聊
+      if (msg.message_thread_id) {
+        await handleTopicMessage(msg, env);
+        return new Response('OK');
+      }
     }
 
     return new Response('OK');
@@ -70,6 +83,14 @@ async function handlePrivateMessage(msg, env) {
 
   // 1. 从 KV 取该用户绑定的话题
   let rec = await env.TOPIC_MAP.get(key, { type: 'json' });
+  // 已有话题但被关闭：不再推送群组，只提示用户
+  if (rec && rec.closed) {
+    await tgCall(env, 'sendMessage', {
+      chat_id: userId,
+      text: '当前话题已被管理员关闭，如需继续对话请联系管理员或等待重新开启。'
+    });
+    return;
+  }
 
   // 2. 没有就创建新话题并存 KV
   if (!rec) {
@@ -85,15 +106,26 @@ async function handlePrivateMessage(msg, env) {
     message_thread_id: rec.thread_id
   });
 
-  // 如果话题不存在/被删，有可能返回失败，这里简单做一次重建重试
-  if (!res.ok && isThreadError(res)) {
-    const newRec = await createAndStoreTopic(msg.from, key, env);
-    await tgCall(env, 'forwardMessage', {
-      chat_id: env.SUPERGROUP_ID,
-      from_chat_id: userId,
-      message_id: msg.message_id,
-      message_thread_id: newRec.thread_id
-    });
+  // 如果话题不存在/被删，有可能返回失败，这里只在“话题不存在”时重建
+  if (!res.ok) {
+    if (isTopicClosedError(res)) {
+      // 标记已关闭，后续该用户消息会被拦截
+      await markThreadClosed(rec.thread_id, env);
+      await tgCall(env, 'sendMessage', {
+        chat_id: userId,
+        text: '当前话题已被管理员关闭，如需继续对话请联系管理员或等待重新开启。'
+      });
+      return;
+    }
+    if (isThreadMissingError(res)) {
+      const newRec = await createAndStoreTopic(msg.from, key, env);
+      await tgCall(env, 'forwardMessage', {
+        chat_id: env.SUPERGROUP_ID,
+        from_chat_id: userId,
+        message_id: msg.message_id,
+        message_thread_id: newRec.thread_id
+      });
+    }
   }
 }
 
@@ -131,7 +163,7 @@ async function createAndStoreTopic(from, key, env) {
   }
 
   const threadId = res.result.message_thread_id;
-  const rec = { thread_id: threadId, title };
+  const rec = { thread_id: threadId, title, closed: false };
   await env.TOPIC_MAP.put(key, JSON.stringify(rec));
   return rec;
 }
@@ -182,11 +214,42 @@ async function tgCall(env, method, body) {
   return data;
 }
 
-// 简单判断是否是话题相关的错误（可按需要再细化）
-function isThreadError(res) {
+// 区分几类话题相关错误（根据 Telegram 返回的描述文本粗略判断）
+function isTopicClosedError(res) {
   if (!res || res.ok) return false;
   const desc = (res.description || '').toUpperCase();
-  return desc.includes('THREAD') || desc.includes('TOPIC');
+  return desc.includes('TOPIC_CLOSED');
+}
+
+function isThreadMissingError(res) {
+  if (!res || res.ok) return false;
+  const desc = (res.description || '').toUpperCase();
+  return desc.includes('MESSAGE_THREAD_NOT_FOUND') || desc.includes('THREAD_NOT_FOUND');
+}
+
+// 标记话题关闭 / 重新开启
+async function markThreadClosed(threadId, env) {
+  const list = await env.TOPIC_MAP.list({ prefix: 'user:' });
+  for (const { name } of list.keys) {
+    const rec = await env.TOPIC_MAP.get(name, { type: 'json' });
+    if (rec && Number(rec.thread_id) === Number(threadId)) {
+      rec.closed = true;
+      await env.TOPIC_MAP.put(name, JSON.stringify(rec));
+      break;
+    }
+  }
+}
+
+async function markThreadReopened(threadId, env) {
+  const list = await env.TOPIC_MAP.list({ prefix: 'user:' });
+  for (const { name } of list.keys) {
+    const rec = await env.TOPIC_MAP.get(name, { type: 'json' });
+    if (rec && Number(rec.thread_id) === Number(threadId)) {
+      rec.closed = false;
+      await env.TOPIC_MAP.put(name, JSON.stringify(rec));
+      break;
+    }
+  }
 }
 
 // 是否已通过 Turnstile 验证
