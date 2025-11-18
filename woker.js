@@ -1,0 +1,249 @@
+// Cloudflare Worker 入口
+export default {
+  async fetch(request, env, ctx) {
+    // Serve Turnstile verify page & callback
+    const url = new URL(request.url);
+    if (url.pathname === '/verify') {
+      if (request.method === 'GET') return renderVerifyPage(url, env);
+      if (request.method === 'POST') return handleVerifySubmit(request, env);
+    }
+
+    if (request.method !== 'POST') return new Response('OK');
+
+    let update;
+    try {
+      update = await request.json();
+    } catch {
+      return new Response('OK');
+    }
+
+    const msg = update.message;
+    if (!msg) {
+      return new Response('OK');
+    }
+
+    // 私聊 -> 话题
+  if (msg.chat && msg.chat.type === 'private') {
+      await handlePrivateMessage(msg, env);
+      return new Response('OK');
+    }
+
+    // 群话题 -> 私聊
+    const supergroupId = Number(env.SUPERGROUP_ID);
+    if (msg.chat && Number(msg.chat.id) === supergroupId && msg.message_thread_id) {
+      await handleTopicMessage(msg, env);
+      return new Response('OK');
+    }
+
+    return new Response('OK');
+  }
+};
+
+// 私聊来的消息：转到对应话题（带引用转发）
+async function handlePrivateMessage(msg, env) {
+  const userId = msg.chat.id;
+  const key = `user:${userId}`;
+
+  // 过滤 /start 命令
+  if (msg.text && msg.text.trim().toLowerCase().startsWith('/start')) {
+    return;
+  }
+
+  // Turnstile 首次验证（可选）
+  if (env.TURNSTILE_SECRET && env.TURNSTILE_SITEKEY) {
+    const verified = await isVerified(userId, env);
+    if (!verified) {
+      const token = crypto.randomUUID();
+      // 15 分钟有效
+      await env.TOPIC_MAP.put(`verify:${token}`, JSON.stringify({ uid: userId }), { expirationTtl: 900 });
+      const base = env.PUBLIC_BASE; // 请在环境变量中配置形如 https://tgbot.xxx.workers.dev
+      if (base) {
+        const link = `${base.replace(/\/$/, '')}/verify?token=${token}`;
+        await tgCall(env, 'sendMessage', {
+          chat_id: userId,
+          text: `⚠️ 请先完成人机验证再继续：\n🔗 ${link}`
+        });
+      }
+      return;
+    }
+  }
+
+  // 1. 从 KV 取该用户绑定的话题
+  let rec = await env.TOPIC_MAP.get(key, { type: 'json' });
+
+  // 2. 没有就创建新话题并存 KV
+  if (!rec) {
+    rec = await createAndStoreTopic(msg.from, key, env);
+  }
+
+  // 3. 把用户消息“带引用”转发到话题中
+  //    使用 forwardMessage，会显示「转发自 XXX」
+  const res = await tgCall(env, 'forwardMessage', {
+    chat_id: env.SUPERGROUP_ID,
+    from_chat_id: userId,
+    message_id: msg.message_id,
+    message_thread_id: rec.thread_id
+  });
+
+  // 如果话题不存在/被删，有可能返回失败，这里简单做一次重建重试
+  if (!res.ok && isThreadError(res)) {
+    const newRec = await createAndStoreTopic(msg.from, key, env);
+    await tgCall(env, 'forwardMessage', {
+      chat_id: env.SUPERGROUP_ID,
+      from_chat_id: userId,
+      message_id: msg.message_id,
+      message_thread_id: newRec.thread_id
+    });
+  }
+}
+
+// 话题里的消息：转回对应用户（不带引用，隐藏身份）
+async function handleTopicMessage(msg, env) {
+  const threadId = msg.message_thread_id;
+
+  // 避免机器人自己发的消息再回给用户导致循环
+  const botId = Number(env.BOT_ID || 0);
+  if (msg.from && Number(msg.from.id) === botId) {
+    return;
+  }
+
+  const userId = await findUserByThread(threadId, env);
+  if (!userId) return;
+
+  // 用 copyMessage 复制消息到私聊，不带「转发自」
+  await tgCall(env, 'copyMessage', {
+    chat_id: userId,
+    from_chat_id: env.SUPERGROUP_ID,
+    message_id: msg.message_id
+  });
+}
+
+// 创建话题并写入 KV：key = user:<uid>，value = { thread_id, title }
+async function createAndStoreTopic(from, key, env) {
+  const title = buildTopicTitle(from);
+  const res = await tgCall(env, 'createForumTopic', {
+    chat_id: env.SUPERGROUP_ID,
+    name: title
+  });
+
+  if (!res.ok) {
+    throw new Error('createForumTopic failed: ' + res.description);
+  }
+
+  const threadId = res.result.message_thread_id;
+  const rec = { thread_id: threadId, title };
+  await env.TOPIC_MAP.put(key, JSON.stringify(rec));
+  return rec;
+}
+
+// 按 thread_id 反查用户（简单版本：遍历所有 key）
+// 如果用户比较少，这样足够用；多用户时可以再做 thread->user 的反向 KV
+async function findUserByThread(threadId, env) {
+  const list = await env.TOPIC_MAP.list({ prefix: 'user:' });
+  for (const { name } of list.keys) {
+    const rec = await env.TOPIC_MAP.get(name, { type: 'json' });
+    if (rec && Number(rec.thread_id) === Number(threadId)) {
+      return Number(name.slice('user:'.length));
+    }
+  }
+  return null;
+}
+
+// 话题标题：只用昵称/用户名，不带 uid
+function buildTopicTitle(from) {
+  let uname = '';
+  if (from.username) {
+    uname = '@' + from.username;
+  } else {
+    const first = from.first_name || '';
+    const last = from.last_name || '';
+    const nick = (first + ' ' + last).trim();
+    uname = nick || 'User';
+  }
+  // Telegram 限制 128 字符
+  return String(uname).slice(0, 128);
+}
+
+// Telegram API 通用调用
+async function tgCall(env, method, body) {
+  const base = env.API_BASE || 'https://api.telegram.org';
+  const url = `${base}/bot${env.BOT_TOKEN}/${method}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  let data;
+  try {
+    data = await resp.json();
+  } catch {
+    data = { ok: false, description: 'invalid json from telegram' };
+  }
+  return data;
+}
+
+// 简单判断是否是话题相关的错误（可按需要再细化）
+function isThreadError(res) {
+  if (!res || res.ok) return false;
+  const desc = (res.description || '').toUpperCase();
+  return desc.includes('THREAD') || desc.includes('TOPIC');
+}
+
+// 是否已通过 Turnstile 验证
+async function isVerified(uid, env) {
+  const flag = await env.TOPIC_MAP.get(`verified:${uid}`);
+  return Boolean(flag);
+}
+
+// Turnstile 验证页面
+function renderVerifyPage(url, env) {
+  const token = url.searchParams.get('token') || '';
+  const sitekey = env.TURNSTILE_SITEKEY;
+  if (!sitekey || !token) return new Response('Missing token or sitekey', { status: 400 });
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>人机验证</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+</head>
+<body>
+  <h3>请完成人机验证</h3>
+  <form method="POST" action="/verify">
+    <div class="cf-turnstile" data-sitekey="${sitekey}"></div>
+    <input type="hidden" name="token" value="${token}" />
+    <button type="submit">提交</button>
+  </form>
+</body>
+</html>`;
+  return new Response(html, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
+}
+
+// 处理 Turnstile 提交
+async function handleVerifySubmit(request, env) {
+  const form = await request.formData();
+  const respToken = form.get('cf-turnstile-response');
+  const token = form.get('token');
+  if (!respToken || !token) return new Response('缺少验证信息', { status: 400 });
+
+  const verifyRes = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      secret: env.TURNSTILE_SECRET,
+      response: respToken
+    })
+  });
+  const data = await verifyRes.json();
+  if (!data.success) {
+    return new Response('验证失败，请返回重试', { status: 400 });
+  }
+
+  const record = await env.TOPIC_MAP.get(`verify:${token}`, { type: 'json' });
+  if (!record || !record.uid) return new Response('验证超时或记录不存在', { status: 400 });
+
+  await env.TOPIC_MAP.put(`verified:${record.uid}`, '1');
+  await env.TOPIC_MAP.delete(`verify:${token}`);
+
+  return new Response('验证成功，请回到 Telegram 继续对话。', { status: 200 });
+}
