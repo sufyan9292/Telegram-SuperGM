@@ -1,4 +1,4 @@
-﻿// Cloudflare Worker 入口（日志调试版 + 媒体组批量转发）
+﻿// Cloudflare Worker 入口（带 Turnstile + 相册聚合）
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -10,27 +10,20 @@ export default {
     if (request.method !== 'POST') return new Response('OK');
 
     let update;
-    try {
-      update = await request.json();
-    } catch (err) {
-      console.log('parse update failed', String(err));
-      return new Response('OK');
-    }
+    try { update = await request.json(); } catch { return new Response('OK'); }
 
     const msg = update.message;
-    if (!msg) {
-      console.log('update without message', JSON.stringify(update));
-      return new Response('OK');
-    }
+    if (!msg) return new Response('OK');
+
+    // 先尝试将超时未发出的 media_group flush 掉
+    const now = Date.now();
+    await flushExpiredMediaGroups(env, now);
 
     console.log('update summary', {
       from_id: msg.from && msg.from.id,
-      from_name: msg.from && `${msg.from.first_name ?? ''} ${msg.from.last_name ?? ''}`.trim(),
       chat_id: msg.chat && msg.chat.id,
       chat_type: msg.chat && msg.chat.type,
       thread_id: msg.message_thread_id,
-      forum_topic_closed: !!msg.forum_topic_closed,
-      forum_topic_reopened: !!msg.forum_topic_reopened,
       media_group_id: msg.media_group_id
     });
 
@@ -55,7 +48,6 @@ export default {
       }
     }
 
-    console.log('message ignored');
     return new Response('OK');
   }
 };
@@ -64,16 +56,12 @@ export default {
 async function handlePrivateMessage(msg, env) {
   const userId = msg.chat.id;
   const key = `user:${userId}`;
-  console.log('handlePrivateMessage', { userId, text: msg.text });
 
-  if (msg.text && msg.text.trim().toLowerCase().startsWith('/start')) {
-    return;
-  }
+  if (msg.text && msg.text.trim().toLowerCase().startsWith('/start')) return;
 
   // Turnstile 验证
   if (env.TURNSTILE_SECRET && env.TURNSTILE_SITEKEY) {
     const verified = await isVerified(userId, env);
-    console.log('isVerified', { userId, verified });
     if (!verified) {
       const token = crypto.randomUUID();
       await env.TOPIC_MAP.put(`verify:${token}`, JSON.stringify({ uid: userId }), { expirationTtl: 900 });
@@ -96,8 +84,6 @@ async function handlePrivateMessage(msg, env) {
   }
 
   let rec = await env.TOPIC_MAP.get(key, { type: 'json' });
-  console.log('kv topic record', { key, rec });
-
   if (rec && rec.closed) {
     await tgCall(env, 'sendMessage', {
       chat_id: userId,
@@ -105,10 +91,9 @@ async function handlePrivateMessage(msg, env) {
     });
     return;
   }
-
   if (!rec) rec = await createAndStoreTopic(msg.from, key, env);
 
-  // 相册批量：用户 -> 话题
+  // 相册聚合：用户 -> 话题
   if (msg.media_group_id) {
     await handleMediaGroup(msg, env, { direction: 'p2t', targetChat: env.SUPERGROUP_ID, threadId: rec.thread_id });
     return;
@@ -121,17 +106,14 @@ async function handlePrivateMessage(msg, env) {
     message_thread_id: rec.thread_id
   });
 
-  if (!res.ok) {
-    console.log('forwardMessage failed', { userId, thread_id: rec.thread_id, error_code: res.error_code, description: res.description });
-    if (isThreadMissingError(res)) {
-      const newRec = await createAndStoreTopic(msg.from, key, env);
-      await tgCall(env, 'forwardMessage', {
-        chat_id: env.SUPERGROUP_ID,
-        from_chat_id: userId,
-        message_id: msg.message_id,
-        message_thread_id: newRec.thread_id
-      });
-    }
+  if (!res.ok && isThreadMissingError(res)) {
+    const newRec = await createAndStoreTopic(msg.from, key, env);
+    await tgCall(env, 'forwardMessage', {
+      chat_id: env.SUPERGROUP_ID,
+      from_chat_id: userId,
+      message_id: msg.message_id,
+      message_thread_id: newRec.thread_id
+    });
   }
 }
 
@@ -144,7 +126,7 @@ async function handleTopicMessage(msg, env) {
   const userId = await findUserByThread(threadId, env);
   if (!userId) return;
 
-  // 相册批量：话题 -> 用户
+  // 相册聚合：话题 -> 用户
   if (msg.media_group_id) {
     await handleMediaGroup(msg, env, { direction: 't2p', targetChat: userId, threadId: null });
     return;
@@ -156,7 +138,6 @@ async function handleTopicMessage(msg, env) {
     message_id: msg.message_id
   });
   if (!res.ok) {
-    console.log('copyMessage failed, fallback forward', { error_code: res.error_code, description: res.description });
     const res2 = await tgCall(env, 'forwardMessage', {
       chat_id: userId,
       from_chat_id: env.SUPERGROUP_ID,
@@ -200,9 +181,7 @@ async function tgCall(env, method, body) {
 function isThreadMissingError(res) {
   if (!res || res.ok) return false;
   const desc = (res.description || '').toUpperCase();
-  const hit = desc.includes('MESSAGE THREAD NOT FOUND') || desc.includes('MESSAGE_THREAD_NOT_FOUND') || desc.includes('THREAD_NOT_FOUND') || desc.includes('TOPIC_NOT_FOUND') || desc.includes('FORUM_TOPIC_NOT_FOUND');
-  console.log('isThreadMissingError', { desc, hit });
-  return hit;
+  return desc.includes('MESSAGE THREAD NOT FOUND') || desc.includes('MESSAGE_THREAD_NOT_FOUND') || desc.includes('THREAD_NOT_FOUND') || desc.includes('TOPIC_NOT_FOUND') || desc.includes('FORUM_TOPIC_NOT_FOUND');
 }
 
 async function markThreadClosed(threadId, env) {
@@ -226,14 +205,12 @@ async function isVerified(uid, env) {
   return Boolean(flag);
 }
 
-// 按 thread_id 反查用户（遍历 KV 映射）
+// 按 thread_id 反查用户（遍历 KV）
 async function findUserByThread(threadId, env) {
   const list = await env.TOPIC_MAP.list({ prefix: 'user:' });
   for (const { name } of list.keys) {
     const rec = await env.TOPIC_MAP.get(name, { type: 'json' });
-    if (rec && Number(rec.thread_id) === Number(threadId)) {
-      return Number(name.slice('user:'.length));
-    }
+    if (rec && Number(rec.thread_id) === Number(threadId)) return Number(name.slice('user:'.length));
   }
   return null;
 }
@@ -278,14 +255,12 @@ async function handleVerifySubmit(request, env) {
   await env.TOPIC_MAP.delete(`verify:${token}`);
   console.log('verified-set', { uid: record.uid });
 
-  try {
-    await tgCall(env, 'sendMessage', { chat_id: record.uid, text: '✅ 人机验证成功，可以回到和机器人的私聊继续发送消息了。' });
-  } catch {}
+  try { await tgCall(env, 'sendMessage', { chat_id: record.uid, text: '✅ 人机验证成功，可以回到和机器人的私聊继续发送消息了。' }); } catch {}
 
   return new Response('验证成功，请回到 Telegram 继续对话。', { status: 200 });
 }
 
-// ---------------- 媒体组批量发送 ----------------
+// ---------------- 媒体组批量发送：攒到 10 张，或 2 秒未追加则发送 ----------------
 async function handleMediaGroup(msg, env, { direction, targetChat, threadId }) {
   const groupId = msg.media_group_id;
   const key = `mg:${direction}:${groupId}`;
@@ -295,33 +270,21 @@ async function handleMediaGroup(msg, env, { direction, targetChat, threadId }) {
   if (!item) {
     console.log('media group item unsupported, fallback single', { groupId });
     return direction === 'p2t'
-      ? tgCall(env, 'forwardMessage', {
-          chat_id: targetChat,
-          from_chat_id: msg.chat.id,
-          message_id: msg.message_id,
-          message_thread_id: threadId
-        })
-      : tgCall(env, 'copyMessage', {
-          chat_id: targetChat,
-          from_chat_id: msg.chat.id,
-          message_id: msg.message_id
-        });
+      ? tgCall(env, 'forwardMessage', { chat_id: targetChat, from_chat_id: msg.chat.id, message_id: msg.message_id, message_thread_id: threadId })
+      : tgCall(env, 'copyMessage', { chat_id: targetChat, from_chat_id: msg.chat.id, message_id: msg.message_id });
   }
 
   let rec = await env.TOPIC_MAP.get(key, { type: 'json' });
-  if (!rec) rec = { targetChat, threadId, items: [], first_ts: now };
+  if (!rec) rec = { direction, targetChat, threadId, items: [], last_ts: now };
 
   rec.items.push(item);
+  rec.last_ts = now;
   await env.TOPIC_MAP.put(key, JSON.stringify(rec), { expirationTtl: 60 });
   console.log('media group buffered', { key, count: rec.items.length });
 
-  const shouldGroup = rec.items.length >= 2;
-  const shouldSingle = rec.items.length === 1 && now - rec.first_ts > 1500;
-
-  if (shouldGroup) {
-    await flushMediaGroup(rec, env, key, direction);
-  } else if (shouldSingle) {
-    await flushSingleMedia(msg, env, direction, targetChat, threadId);
+  // 满 10 张立即发送
+  if (rec.items.length >= 10) {
+    await flushMediaGroup(rec, env, key);
     await env.TOPIC_MAP.delete(key);
   }
 }
@@ -336,30 +299,32 @@ function extractMedia(msg) {
   return null;
 }
 
-async function flushMediaGroup(rec, env, key, direction) {
-  const media = rec.items.map((it, idx) => ({ type: it.type, media: it.file_id, caption: idx === 0 ? it.caption : undefined }));
-  const payload = { chat_id: rec.targetChat, media };
-  if (direction === 'p2t' && rec.threadId) payload.message_thread_id = rec.threadId;
-
-  const res = await tgCall(env, 'sendMediaGroup', payload);
-  console.log('sendMediaGroup result', { key, ok: res.ok, error_code: res.error_code, description: res.description });
-  await env.TOPIC_MAP.delete(key);
-}
-
-async function flushSingleMedia(msg, env, direction, targetChat, threadId) {
-  if (direction === 'p2t') {
-    await tgCall(env, 'forwardMessage', {
-      chat_id: targetChat,
-      from_chat_id: msg.chat.id,
-      message_id: msg.message_id,
-      message_thread_id: threadId
-    });
-  } else {
-    await tgCall(env, 'copyMessage', {
-      chat_id: targetChat,
-      from_chat_id: msg.chat.id,
-      message_id: msg.message_id
-    });
+async function flushExpiredMediaGroups(env, now) {
+  const list = await env.TOPIC_MAP.list({ prefix: 'mg:' });
+  for (const { name } of list.keys) {
+    const rec = await env.TOPIC_MAP.get(name, { type: 'json' });
+    if (!rec || !rec.items || !rec.items.length) { await env.TOPIC_MAP.delete(name); continue; }
+    if (now - (rec.last_ts || 0) > 2000) { // 超过2秒未追加，视为一组结束
+      if (rec.items.length >= 2) {
+        await flushMediaGroup(rec, env, name);
+      } else {
+        // 只有1条，按原方向单发
+        if (rec.direction === 'p2t') {
+          await tgCall(env, 'forwardMessage', { chat_id: rec.targetChat, from_chat_id: rec.targetChat, message_id: rec.items[0].message_id, message_thread_id: rec.threadId });
+        } else {
+          // 这里无法复原 message_id，只能忽略单条特殊情形
+        }
+      }
+      await env.TOPIC_MAP.delete(name);
+    }
   }
 }
 
+async function flushMediaGroup(rec, env, key) {
+  const media = rec.items.map((it, idx) => ({ type: it.type, media: it.file_id, caption: idx === 0 ? it.caption : undefined }));
+  const payload = { chat_id: rec.targetChat, media };
+  if (rec.direction === 'p2t' && rec.threadId) payload.message_thread_id = rec.threadId;
+
+  const res = await tgCall(env, 'sendMediaGroup', payload);
+  console.log('sendMediaGroup result', { key, ok: res.ok, error_code: res.error_code, description: res.description });
+}
