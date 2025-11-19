@@ -272,7 +272,7 @@ async function handleVerifySubmit(request, env) {
   console.log("verified-set", { uid: record.uid });
 
   try {
-    await tgCall(env, "sendMessage", { chat_id: record.uid, text: "✅ 人机验证成功，可以回到和机器人的私聊继续发送消息了。" });
+    await tgCall(env, "sendMessage", { chat_id: record.uid, text: "✅ 人机验证成功，请等待几秒数据库异地回调再和机器人的私聊继续发送消息，否则会触发无限验证。" });
   } catch {}
 
   return new Response("验证成功，请回到 Telegram 继续对话。", { status: 200 });
