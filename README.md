@@ -1,7 +1,4 @@
-
-# Telegram-SuperGM TG 双向机器人超级群组 Cloudflare Worker 版
-
-
+﻿# Telegram-SuperGM TG 双向机器人超级群组 Cloudflare Worker 版
 
 一个部署在 **Cloudflare Workers** 上的 Telegram 机器人中间层，实现“**私聊 ↔ 超级群话题**”的隔离转发，适合客服、中介、工单等场景。
 
@@ -12,22 +9,19 @@
            话题回复回流到用户私聊
 ```
 
-## 功能亮点
+## ✨ 项目亮点
 
-- **一人一话题，不串线**：每个用户在超级群都有独立话题，所有记录集中在该话题里，管理员查阅、跟进更清晰。
-- **方向可控的双向转发**：
-  - 私聊 → 话题：使用 `forwardMessage`，带“来自谁”的引用，群里能看出是哪位用户。
-  - 话题 → 私聊：使用 `copyMessage`，不带转发标记，隐藏群内身份。
-- **Turnstile 首次人机验证（可选）**：首条私聊先做人机验证，通过后才真正创建话题并开始转发，降低滥用风险。
-- **话题关闭 / 重新开启联动**：
-  - 群里关闭话题后，对应用户的私聊消息不再推送到群，只在私聊提示“话题已关闭”。
-  - 重新开启话题后，自动恢复转发。
+- 🛡️ **人机验证**：新用户必须通过 Turnstile 验证，降低机器人骚扰和滥用风险。
+- 💬 **独立话题沟通**：每个用户都在独立的 Telegram 话题（Forum）中对话，历史清晰、管理不串线。
+- ⚫️ **随时拉黑用户**：若不想再接收某个用户的消息，直接在群内关闭对应话题，即可拦截 TA 的所有后续消息。（市面上的bot几乎都没有一键屏蔽用户消息的功能）
+- 🖼️ **多媒体支持**：支持图片、视频、文件等消息类型的转发；文本消息支持 Telegram Markdown 格式。
+- ⚡ **无需自建服务器**：基于 Cloudflare Worker，按量计费，省心托管，轻松应对大量消息。
 
 ---
 
 ## 项目结构
 
-- `woker.js`：Cloudflare Worker 入口，处理 Webhook、读写 KV、调用 Telegram Bot API。
+- `woker.js`：Cloudflare Worker 入口，处理 Telegram Webhook、读写 KV、调用 Bot API。
 - `README.md`：项目说明文档（当前文件）。
 
 ### 相关频道 / 群
@@ -37,38 +31,40 @@
 
 ---
 
-## KV 映射设计
+## KV 设置说明
 
-使用 Cloudflare KV 记录“用户 ↔ 话题”关系：
+本项目使用 Cloudflare KV 记录“用户 ↔ 话题”映射关系。
 
-| 项目   | 说明                                    |
-|--------|-----------------------------------------|
-| 绑定名 | `TOPIC_MAP`                             |
-| key    | `user:<uid>`                            |
-| value  | `{"thread_id", "title", "closed"}` |
+你只需要：
 
-- `thread_id`：超级群中话题的 `message_thread_id`。
-- `title`：话题标题，使用用户昵称或 `@username`。
-- `closed`：布尔值，话题被关闭时为 `true`，此用户的消息将不再推送到群里。
+1. 在 Cloudflare Dashboard 创建一个 KV 命名空间（名称随意，例如 `tg-topic-map`）。
+2. 在 Worker 的 **Settings → KV Namespace Bindings** 中绑定该命名空间，绑定名（Variable name）填：`TOPIC_MAP`。
 
-额外使用的 KV key：
-
-- `verified:<uid>`：Turnstile 验证通过标记。
-- `verify:<token>`：Turnstile 验证一次性 token 与用户的临时绑定。
+所有实际的 key/value（例如：
+- `user:<uid>` → `{ thread_id, title, closed }`
+- `verified:<uid>` / `verify:<token>` 等
+）都会由程序自动写入，无需手动创建。
 
 ---
 
 ## 环境变量（Settings → Variables）
 
-| 变量名              | 必须 | 说明 / 示例                                  |
-|---------------------|------|----------------------------------------------|
-| `BOT_TOKEN`         | 是   | Telegram Bot Token                          |
-| `BOT_ID`            | 是   | 机器人自身 user id（通过 `getMe` 获取）     |
-| `SUPERGROUP_ID`     | 是   | 目标超级群 chat id，带 `-100` 前缀          |
-| `API_BASE`          | 否   | 默认 `https://api.telegram.org`             |
-| `TURNSTILE_SITEKEY` | 否   | Turnstile Site Key，启用人机验证时必填      |
-| `TURNSTILE_SECRET`  | 否   | Turnstile Secret，启用人机验证时必填        |
-| `PUBLIC_BASE`       | 否   | Worker 公网地址，如 `https://tgbot.xxx.com` |
+在 Worker 的 **Settings → Variables** 中添加以下变量：
+
+| 变量名              | 必须 | 说明 / 示例                                                                 |
+|---------------------|------|------------------------------------------------------------------------------|
+| `BOT_TOKEN`         | 是   | Telegram Bot Token。例如：`123456789:xxxx`                                  |
+| `BOT_ID`            | 是   | 机器人自身 user id，就是 Bot Token 冒号前面的数字，例如 `123456789`        |
+| `SUPERGROUP_ID`     | 是   | 目标超级群 chat id，形如 `-100xxxxxxxxxx`                                  |
+| `API_BASE`          | 否   | 默认 `https://api.telegram.org`                                             |
+| `TURNSTILE_SITEKEY` | 否   | Turnstile Site Key，启用人机验证时必填                                      |
+| `TURNSTILE_SECRET`  | 否   | Turnstile Secret，启用人机验证时必填                                        |
+| `PUBLIC_BASE`       | 否   | Worker 公网地址，如 `https://tgbot.xxx.com`，用于生成验证链接               |
+
+> 获取 `SUPERGROUP_ID` 小技巧：
+> - 在 Telegram 桌面端右键群内任意消息，复制消息链接；
+> - 链接里会有一段 `-100xxxxxxxxxx` 或 `xxxxxxxxxx`；
+> - 若只看到纯数字 `xxxxxxxxxx`，在前面加上 `-100`，就是完整的 `SUPERGROUP_ID`（私密频道/群组同理）。
 
 ---
 
@@ -76,18 +72,18 @@
 
 ### 1. Telegram 侧
 
-1. 在 @BotFather 创建机器人，记录 `BOT_TOKEN`。
-2. 使用 `/setprivacy` 关闭隐私模式（选择 Disable），保证能收到群内消息。
+1. 在 **@BotFather** 创建机器人，记录 `BOT_TOKEN`。
+2. 使用 `/setprivacy` 关闭隐私模式（选择 `Disable`），保证能收到群内消息。
 3. 将 bot 拉入目标超级群：
    - 群内启用话题（Topics）功能；
    - 给 bot 授权“发消息、管理话题”等权限。
-4. 获取超级群 `chat_id`（形如 `-100xxxxxxxxxx`），配置为 `SUPERGROUP_ID`。
+4. 通过复制消息链接或其它方式获取该群的 `chat_id`，配置为 `SUPERGROUP_ID`（格式为 `-100xxxxxxxxxx`）。
 
 ### 2. Cloudflare 侧
 
-1. 在 Cloudflare Dashboard 创建 KV 命名空间，并在 Worker 中绑定为 `TOPIC_MAP`。
-2. 新建 Worker（Modules 模式），拷贝 `woker.js` 代码。
-3. 在 Settings → Variables 中配置上面的环境变量值。
+1. 创建 KV 命名空间，并在 Worker 中绑定为 `TOPIC_MAP`（见上文 KV 设置）。
+2. 新建 Worker（Modules 模式），将 `woker.js` 代码粘贴进去。
+3. 在 Settings → Variables 中配置上文列出的环境变量。
 4. 如需自定义域名，为 Worker 添加路由，例如 `https://tgbot.xxxx.com/*`。
 
 ### 3. 启用 Webhook（非常关键）
@@ -111,7 +107,7 @@ curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://tgbot.xxxx.com"
 
 执行后可通过 `getWebhookInfo` 确认 `url` 是否已是最新地址。
 
-### 4. 验证
+### 4. 功能验证
 
 1. 自己先私聊 bot，若启用 Turnstile，会先收到人机验证链接；验证通过后再继续。
 2. 再发一条普通消息：
