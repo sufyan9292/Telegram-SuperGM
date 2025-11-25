@@ -159,6 +159,12 @@ console.log(JSON.stringify(update, null, 2));
 
 ---
 
+## 更新记录
+
+- **2025-11-25**：修复用户端一次发送多媒体（相册消息）时会卡住、需等待后续消息才能一并推送的问题，新增 `ctx.waitUntil` 异步 flush，确保 2 秒超时即可自动发送。
+
+---
+
 ## 安全提示
 
 - **不要泄露 Bot Token**。若不慎泄露，请立即在 @BotFather 中执行 `/revoke` 并更新 Worker 的 `BOT_TOKEN`。

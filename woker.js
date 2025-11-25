@@ -356,12 +356,12 @@ async function flushMediaGroup(rec, env, key) {
     return;
   }
 
-  const media = rec.items.map((it, idx) => ({ type: it.type, media: it.file_id, caption: idx === 0 ? it.caption : undefined }));
-  const payload = { chat_id: rec.targetChat, media };
-  if (rec.direction === "p2t" && rec.threadId) payload.message_thread_id = rec.threadId;
-
-  const res = await tgCall(env, "sendMediaGroup", payload);
-  console.log("sendMediaGroup result", { key, ok: res.ok, error_code: res.error_code, description: res.description });
+  if (rec.direction === "p2t") {
+    await forwardMediaGroupToTopic(rec, env);
+  } else {
+    await sendMediaGroupToUser(rec, env);
+  }
+  console.log("flushMediaGroup batch forwarded", { key, count: rec.items.length, direction: rec.direction });
 }
 
 function scheduleMediaGroupFlush(ctx, env, key, expectedTs) {
@@ -380,4 +380,56 @@ function scheduleMediaGroupFlush(ctx, env, key, expectedTs) {
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function forwardMediaGroupToTopic(rec, env) {
+  const fromChatId = rec.items[0].from_chat_id;
+  const sameSource = rec.items.every((it) => it.from_chat_id === fromChatId);
+  if (sameSource) {
+    const res = await tgCall(env, "forwardMessages", {
+      chat_id: rec.targetChat,
+      from_chat_id: fromChatId,
+      message_thread_id: rec.threadId,
+      message_ids: rec.items.map((it) => it.message_id),
+    });
+    if (res.ok) return;
+    console.log("forwardMessages failed, fallback to single forwards", { error_code: res.error_code, description: res.description });
+  }
+  for (const it of rec.items) {
+    await tgCall(env, "forwardMessage", {
+      chat_id: rec.targetChat,
+      from_chat_id: it.from_chat_id,
+      message_id: it.message_id,
+      message_thread_id: rec.threadId,
+    });
+  }
+}
+
+async function sendMediaGroupToUser(rec, env) {
+  const media = rec.items.map((it, idx) => ({
+    type: it.type,
+    media: it.file_id,
+    caption: idx === 0 ? it.caption : undefined,
+  }));
+  const res = await tgCall(env, "sendMediaGroup", {
+    chat_id: rec.targetChat,
+    media,
+  });
+  if (res.ok) return;
+
+  console.log("sendMediaGroup to user failed, fallback to copy", { error_code: res.error_code, description: res.description });
+  for (const it of rec.items) {
+    const copyRes = await tgCall(env, "copyMessage", {
+      chat_id: rec.targetChat,
+      from_chat_id: it.from_chat_id,
+      message_id: it.message_id,
+    });
+    if (!copyRes.ok) {
+      await tgCall(env, "forwardMessage", {
+        chat_id: rec.targetChat,
+        from_chat_id: it.from_chat_id,
+        message_id: it.message_id,
+      });
+    }
+  }
 }
