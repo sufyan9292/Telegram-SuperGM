@@ -63,15 +63,18 @@ async function handlePrivateMessage(msg, env, ctx) {
       const base = env.PUBLIC_BASE;
       if (base) {
         const link = `${base.replace(/\/$/, "")}/verify?token=${token}`;
+        const verifyText = [
+          "⚠️ 检测到这是你第一次使用，请先完成人机验证：",
+          `🔗 <a href="${link}">点击前往</a>`,
+          "",
+          "请在网页中看到“验证成功，请回到 Telegram 继续对话”提示后，",
+          "再回到这里继续发消息，否则会一直重复要求验证。"
+        ].join("\n");
         await tgCall(env, "sendMessage", {
           chat_id: userId,
-          text: [
-            "⚠️ 检测到这是你第一次使用，请先完成人机验证：",
-            `🔗 ${link}`,
-            "",
-            "请在网页中看到“验证成功，请回到 Telegram 继续对话”提示后，",
-            "再回到这里继续发消息，否则会一直重复要求验证。"
-          ].join("\n"),
+          text: verifyText,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
         });
       }
       return;
@@ -237,14 +240,69 @@ function renderVerifyPage(url, env) {
   if (!sitekey || !token) return new Response("Missing token or sitekey", { status: 400 });
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
-<head><meta charset="UTF-8" /><title>人机验证</title><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script></head>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>人机验证</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #f5f7fb;
+      font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+      color: #1f2125;
+    }
+    .card {
+      width: min(420px, 90vw);
+      background: #fff;
+      border-radius: 18px;
+      padding: 32px 28px;
+      box-shadow: 0 24px 60px rgba(15,23,42,0.12);
+      text-align: center;
+    }
+    h1 {
+      font-size: 22px;
+      margin: 0 0 16px;
+    }
+    form {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    button {
+      border: none;
+      border-radius: 12px;
+      padding: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg,#4c8dff,#3460ff);
+      cursor: pointer;
+      box-shadow: 0 10px 20px rgba(52,96,255,0.3);
+    }
+    button:active { transform: translateY(1px); }
+    .tip {
+      font-size: 13px;
+      color: #64748b;
+      margin: 0;
+    }
+  </style>
+</head>
 <body>
-  <h3>请完成人机验证</h3>
-  <form method="POST" action="/verify">
-    <div class="cf-turnstile" data-sitekey="${sitekey}"></div>
-    <input type="hidden" name="token" value="${token}" />
-    <button type="submit">提交</button>
-  </form>
+  <div class="card">
+    <h1>请完成人机验证</h1>
+    <form method="POST" action="/verify">
+      <div class="cf-turnstile" data-sitekey="${sitekey}"></div>
+      <input type="hidden" name="token" value="${token}" />
+      <button type="submit">提交</button>
+      <p class="tip">验证通过后请返回 Telegram 继续对话。</p>
+    </form>
+  </div>
 </body></html>`;
   return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
 }
