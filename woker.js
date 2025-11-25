@@ -23,7 +23,7 @@ export default {
     await flushExpiredMediaGroups(env, Date.now());
 
     if (msg.chat && msg.chat.type === "private") {
-      await handlePrivateMessage(msg, env);
+      await handlePrivateMessage(msg, env, ctx);
       return new Response("OK");
     }
 
@@ -38,7 +38,7 @@ export default {
         return new Response("OK");
       }
       if (msg.message_thread_id) {
-        await handleTopicMessage(msg, env);
+        await handleTopicMessage(msg, env, ctx);
         return new Response("OK");
       }
     }
@@ -48,7 +48,7 @@ export default {
 };
 
 // 私聊 -> 话题
-async function handlePrivateMessage(msg, env) {
+async function handlePrivateMessage(msg, env, ctx) {
   const userId = msg.chat.id;
   const key = `user:${userId}`;
 
@@ -90,7 +90,7 @@ async function handlePrivateMessage(msg, env) {
 
   // 相册聚合：用户 -> 话题
   if (msg.media_group_id) {
-    await handleMediaGroup(msg, env, { direction: "p2t", targetChat: env.SUPERGROUP_ID, threadId: rec.thread_id });
+    await handleMediaGroup(msg, env, ctx, { direction: "p2t", targetChat: env.SUPERGROUP_ID, threadId: rec.thread_id });
     return;
   }
 
@@ -113,7 +113,7 @@ async function handlePrivateMessage(msg, env) {
 }
 
 // 话题 -> 私聊
-async function handleTopicMessage(msg, env) {
+async function handleTopicMessage(msg, env, ctx) {
   const threadId = msg.message_thread_id;
   const botId = Number(env.BOT_ID || 0);
   if (msg.from && Number(msg.from.id) === botId) return;
@@ -123,7 +123,7 @@ async function handleTopicMessage(msg, env) {
 
   // 相册聚合：话题 -> 用户
   if (msg.media_group_id) {
-    await handleMediaGroup(msg, env, { direction: "t2p", targetChat: userId, threadId: null });
+    await handleMediaGroup(msg, env, ctx, { direction: "t2p", targetChat: userId, threadId: null });
     return;
   }
 
@@ -279,7 +279,7 @@ async function handleVerifySubmit(request, env) {
 }
 
 // ---------------- 媒体组批量发送：攒到 10 张，或 2 秒未追加则发送 ----------------
-async function handleMediaGroup(msg, env, { direction, targetChat, threadId }) {
+async function handleMediaGroup(msg, env, ctx, { direction, targetChat, threadId }) {
   const groupId = msg.media_group_id;
   const key = `mg:${direction}:${groupId}`;
   const now = Date.now();
@@ -299,6 +299,7 @@ async function handleMediaGroup(msg, env, { direction, targetChat, threadId }) {
   rec.last_ts = now;
   await env.TOPIC_MAP.put(key, JSON.stringify(rec), { expirationTtl: 60 });
   console.log("media group buffered", { key, count: rec.items.length });
+  scheduleMediaGroupFlush(ctx, env, key, now);
 
   // 满 10 张立即发送
   if (rec.items.length >= 10) {
@@ -361,4 +362,22 @@ async function flushMediaGroup(rec, env, key) {
 
   const res = await tgCall(env, "sendMediaGroup", payload);
   console.log("sendMediaGroup result", { key, ok: res.ok, error_code: res.error_code, description: res.description });
+}
+
+function scheduleMediaGroupFlush(ctx, env, key, expectedTs) {
+  if (!ctx || typeof ctx.waitUntil !== "function") return;
+  ctx.waitUntil(
+    (async () => {
+      await delay(2100);
+      const rec = await env.TOPIC_MAP.get(key, { type: "json" });
+      if (!rec || !rec.items || !rec.items.length) return;
+      if ((rec.last_ts || 0) !== expectedTs) return;
+      await flushMediaGroup(rec, env, key);
+      await env.TOPIC_MAP.delete(key);
+    })()
+  );
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
