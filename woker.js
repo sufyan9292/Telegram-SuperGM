@@ -459,9 +459,8 @@ async function handleVerifySubmit(request, env) {
   return renderVerifyView({
     status: "success",
     title: "验证成功",
-    description: "系统已记录你的验证结果，机器人稍后即可与您继续对话。",
-    content: '<p class="muted">若没有立刻恢复，请等待 3-5 秒再发送消息。</p>',
-    actions: [{ label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, external: true }],
+    description: "系统已记录你的验证结果，稍候即可恢复与机器人的对话。",
+    content: '<p class="tip">请先等待 3~5 秒再回到 Telegram 发送下一条消息，然后手动关闭此页面即可。</p>',
   });
 }
 
