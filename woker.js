@@ -233,18 +233,33 @@ async function findUserByThread(threadId, env) {
   return null;
 }
 
-// Turnstile 页面
-function renderVerifyPage(url, env) {
-  const token = url.searchParams.get("token") || "";
-  const sitekey = env.TURNSTILE_SITEKEY;
-  if (!sitekey || !token) return new Response("Missing token or sitekey", { status: 400 });
+const TELEGRAM_FALLBACK_URL = "https://t.me";
+const VERIFY_STATUS_THEME = {
+  info: { accent: "#3460ff", accentLight: "rgba(52,96,255,0.14)", icon: "🛡️" },
+  success: { accent: "#16a34a", accentLight: "rgba(22,163,74,0.15)", icon: "✅" },
+  error: { accent: "#ef4444", accentLight: "rgba(239,68,68,0.18)", icon: "⚠️" },
+};
+
+function renderVerifyView({ status = "info", title, description = "", content = "", actions = [], includeTurnstile = false, icon, statusCode = 200 }) {
+  const theme = VERIFY_STATUS_THEME[status] || VERIFY_STATUS_THEME.info;
+  const resolvedIcon = icon === null ? "" : icon || theme.icon || "";
+  const iconHtml = resolvedIcon ? `<div class="badge">${resolvedIcon}</div>` : "";
+  const actionHtml = actions.length
+    ? `<div class="actions">${actions
+        .map(({ label, href = "#", primary = true, external }) => {
+          const target = external ? ' target="_blank" rel="noopener noreferrer"' : "";
+          return `<a class="action${primary ? " primary" : ""}" href="${href}"${target}>${label}</a>`;
+        })
+        .join("")}</div>`
+    : "";
+  const script = includeTurnstile ? '<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>' : "";
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>人机验证</title>
-  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <title>${title}</title>
+  ${script}
   <style>
     * { box-sizing: border-box; }
     body {
@@ -253,58 +268,133 @@ function renderVerifyPage(url, env) {
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 24px;
       background: #f5f7fb;
       font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
       color: #1f2125;
     }
     .card {
-      width: min(420px, 90vw);
+      width: min(460px, 92vw);
       background: #fff;
-      border-radius: 18px;
-      padding: 32px 28px;
-      box-shadow: 0 24px 60px rgba(15,23,42,0.12);
+      border-radius: 20px;
+      padding: 32px 30px;
+      box-shadow: 0 32px 70px rgba(15,23,42,0.12);
       text-align: center;
+      border: 1px solid rgba(15,23,42,0.05);
+    }
+    .badge {
+      width: 56px;
+      height: 56px;
+      margin: 0 auto 16px;
+      border-radius: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 28px;
+      background: var(--accent-light);
+      color: var(--accent);
     }
     h1 {
       font-size: 22px;
-      margin: 0 0 16px;
+      margin: 0 0 12px;
+    }
+    .tip {
+      margin: 0 0 22px;
+      color: #64748b;
+      font-size: 14px;
+      line-height: 1.5;
     }
     form {
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 18px;
     }
     button {
       border: none;
       border-radius: 12px;
-      padding: 12px;
+      padding: 13px;
       font-size: 16px;
       font-weight: 600;
       color: #fff;
-      background: linear-gradient(135deg,#4c8dff,#3460ff);
+      background: var(--accent);
       cursor: pointer;
-      box-shadow: 0 10px 20px rgba(52,96,255,0.3);
+      box-shadow: 0 12px 24px rgba(15,23,42,0.16);
     }
     button:active { transform: translateY(1px); }
-    .tip {
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    .action {
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      padding: 12px 18px;
+      border-radius: 12px;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid transparent;
+      color: var(--accent);
+      background: rgba(52,96,255,0.08);
+    }
+    .action.primary {
+      color: #fff;
+      background: var(--accent);
+      border-color: var(--accent);
+      box-shadow: 0 10px 22px rgba(15,23,42,0.16);
+    }
+    .muted {
       font-size: 13px;
-      color: #64748b;
+      color: #94a3b8;
       margin: 0;
+    }
+    @media (min-width: 520px) {
+      .actions { flex-direction: row; justify-content: center; }
     }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>请完成人机验证</h1>
-    <form method="POST" action="/verify">
+  <div class="card" style="--accent:${theme.accent};--accent-light:${theme.accentLight};">
+    ${iconHtml}
+    <h1>${title}</h1>
+    ${description ? `<p class="tip">${description}</p>` : ""}
+    ${content}
+    ${actionHtml}
+  </div>
+</body>
+</html>`;
+  return new Response(html, { status: statusCode, headers: { "content-type": "text/html; charset=utf-8" } });
+}
+
+// Turnstile 页面
+function renderVerifyPage(url, env) {
+  const token = url.searchParams.get("token") || "";
+  const sitekey = env.TURNSTILE_SITEKEY;
+  if (!sitekey || !token) {
+    return renderVerifyView({
+      status: "error",
+      title: "验证链接无效",
+      description: "链接缺少必要参数，请返回 Telegram 重新点击最新的验证按钮。",
+      actions: [{ label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, external: true }],
+      statusCode: 400,
+    });
+  }
+  const formHtml = `<form method="POST" action="/verify">
       <div class="cf-turnstile" data-sitekey="${sitekey}"></div>
       <input type="hidden" name="token" value="${token}" />
-      <button type="submit">提交</button>
-      <p class="tip">验证通过后请返回 Telegram 继续对话。</p>
-    </form>
-  </div>
-</body></html>`;
-  return new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } });
+      <button type="submit">提交验证</button>
+      <p class="tip">验证通过后请切回 Telegram 与机器人继续对话。</p>
+    </form>`;
+  return renderVerifyView({
+    status: "info",
+    title: "请完成人机验证",
+    description: "为了保护社群安全，请完成下面的人机验证。",
+    content: formHtml,
+    includeTurnstile: true,
+    icon: "🛡️",
+  });
 }
 
 // Turnstile 提交
@@ -312,7 +402,21 @@ async function handleVerifySubmit(request, env) {
   const form = await request.formData();
   const respToken = form.get("cf-turnstile-response");
   const token = form.get("token");
-  if (!respToken || !token) return new Response("缺少验证信息", { status: 400 });
+  const retryActions = token
+    ? [
+        { label: "重新验证", href: `/verify?token=${encodeURIComponent(token)}` },
+        { label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, primary: false, external: true },
+      ]
+    : [{ label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, external: true }];
+  if (!respToken || !token) {
+    return renderVerifyView({
+      status: "error",
+      title: "缺少验证信息",
+      description: "请求参数不完整，请刷新页面或重新回到 Telegram 获取验证链接。",
+      actions: retryActions,
+      statusCode: 400,
+    });
+  }
 
   const verifyRes = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
     method: "POST",
@@ -320,10 +424,29 @@ async function handleVerifySubmit(request, env) {
     body: new URLSearchParams({ secret: env.TURNSTILE_SECRET, response: respToken }),
   });
   const data = await verifyRes.json();
-  if (!data.success) return new Response("验证失败，请返回重试", { status: 400 });
+  if (!data.success) {
+    const errors = Array.isArray(data["error-codes"]) && data["error-codes"].length ? data["error-codes"].join(", ") : "";
+    const detail = errors ? `<p class="muted">错误代码：${errors}</p>` : "";
+    return renderVerifyView({
+      status: "error",
+      title: "人机验证未通过",
+      description: "Turnstile 未能确认你是合法用户，请重新开启验证或稍后再试。",
+      content: detail,
+      actions: retryActions,
+      statusCode: 400,
+    });
+  }
 
   const record = await env.TOPIC_MAP.get(`verify:${token}`, { type: "json" });
-  if (!record || !record.uid) return new Response("验证超时或记录不存在", { status: 400 });
+  if (!record || !record.uid) {
+    return renderVerifyView({
+      status: "error",
+      title: "验证已过期",
+      description: "验证记录不存在或已超时，请回到 Telegram 重新获取新的验证链接。",
+      actions: [{ label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, external: true }],
+      statusCode: 410,
+    });
+  }
 
   await env.TOPIC_MAP.put(`verified:${record.uid}`, "1");
   await env.TOPIC_MAP.delete(`verify:${token}`);
@@ -333,7 +456,13 @@ async function handleVerifySubmit(request, env) {
     await tgCall(env, "sendMessage", { chat_id: record.uid, text: "✅ 人机验证成功，请等待几秒数据库异地回调再和机器人的私聊继续发送消息，否则会触发无限验证。" });
   } catch {}
 
-  return new Response("验证成功，请回到 Telegram 继续对话。", { status: 200 });
+  return renderVerifyView({
+    status: "success",
+    title: "验证成功",
+    description: "系统已记录你的验证结果，机器人稍后即可与您继续对话。",
+    content: '<p class="muted">若没有立刻恢复，请等待 3-5 秒再发送消息。</p>',
+    actions: [{ label: "返回 Telegram", href: TELEGRAM_FALLBACK_URL, external: true }],
+  });
 }
 
 // ---------------- 媒体组批量发送：攒到 10 张，或 2 秒未追加则发送 ----------------
